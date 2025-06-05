@@ -1,99 +1,108 @@
 #include <stdio.h>
-#include <stdint.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 
 #pragma pack(push, 1)
 typedef struct {
-    uint16_t type;
-    uint32_t size;
-    uint16_t reserved1;
-    uint16_t reserved2;
-    uint32_t offset;
-} BMPHeader;
+    uint16_t bfType;
+    uint32_t bfSize;
+    uint16_t bfReserved1;
+    uint16_t bfReserved2;
+    uint32_t bfOffBits;
+} BITMAPFILEHEADER;
 
 typedef struct {
-    uint32_t size;
-    int32_t width;
-    int32_t height;
-    uint16_t planes;
-    uint16_t bpp;
-    uint32_t compression;
-    uint32_t image_size;
-    int32_t x_ppm;
-    int32_t y_ppm;
-    uint32_t clr_used;
-    uint32_t clr_important;
-} DIBHeader;
+    uint32_t biSize;
+    int32_t  biWidth;
+    int32_t  biHeight;
+    uint16_t biPlanes;
+    uint16_t biBitCount;
+    uint32_t biCompression;
+    uint32_t biSizeImage;
+    int32_t  biXPelsPerMeter;
+    int32_t  biYPelsPerMeter;
+    uint32_t biClrUsed;
+    uint32_t biClrImportant;
+} BITMAPINFOHEADER;
 #pragma pack(pop)
 
-extern void scaledownhor(uint8_t* img, uint8_t* new_img, 
-                         uint32_t width, uint32_t height,
-                         uint32_t scale, uint32_t stride, uint32_t new_stride);
+extern void scaledownhor(void* src, void* dst, uint32_t width, 
+                           uint32_t height, uint32_t input_stride, 
+                           uint32_t output_stride, uint32_t scale);
 
-int main(int argc, char* argv[]) {
+int main(int argc, char *argv[]) {
     if (argc != 4) {
-        fprintf(stderr, "Użycie: %s input.bmp output.bmp scale\n", argv[0]);
+        printf("Usage: %s <input.bmp> <output.bmp> <scale>\n", argv[0]);
         return 1;
     }
 
-    const char* input_filename = argv[1];
-    const char* output_filename = argv[2];
     int scale = atoi(argv[3]);
-
-    FILE* f = fopen(input_filename, "rb");
-    if (!f) {
-        perror("Błąd otwierania pliku wejściowego");
+    if (scale <= 0) {
+        printf("Scale must be a positive integer\n");
         return 1;
     }
 
-    BMPHeader header;
-    DIBHeader dib;
-    fread(&header, sizeof(BMPHeader), 1, f);
-    fread(&dib, sizeof(DIBHeader), 1, f);
-
-    if (header.type != 0x4D42 || dib.bpp != 24 || dib.compression != 0) {
-        fprintf(stderr, "Obsługiwane są tylko nieskompresowane BMP 24-bitowe.\n");
-        fclose(f);
+    // Open input file
+    FILE *in = fopen(argv[1], "rb");
+    if (!in) {
+        perror("Cannot open input file");
         return 1;
     }
 
-    int width = dib.width;
-    int height = dib.height;
-    int stride = (width * 3 + 3) & ~3;
-    int new_width = width / scale;
-    int new_stride = (new_width * 3 + 3) & ~3;
+    // Read headers
+    BITMAPFILEHEADER fileHeader;
+    BITMAPINFOHEADER infoHeader;
+    
+    fread(&fileHeader, sizeof(fileHeader), 1, in);
+    fread(&infoHeader, sizeof(infoHeader), 1, in);
 
-    uint8_t* input_data = malloc(stride * height);
-    uint8_t* output_data = calloc(new_stride * height, 1);
-
-    fseek(f, header.offset, SEEK_SET);
-    fread(input_data, stride, height, f);
-    fclose(f);
-
-    printf("Adres input_data: %p\n", input_data);
-    printf("Adres output_data: %p\n", output_data);
-    printf("width: %u, height: %u, scale: %u, stride: %u, new_stride: %u\n",
-        width, height, scale, stride, new_stride);
-    scaledownhor(input_data, output_data, width, height, scale, stride, new_stride);
-
-    // Zaktualizuj nagłówki BMP
-    header.size = sizeof(BMPHeader) + sizeof(DIBHeader) + new_stride * height;
-    dib.width = new_width;
-    dib.image_size = new_stride * height;
-
-    FILE* out = fopen(output_filename, "wb");
-    if (!out) {
-        perror("Błąd otwierania pliku wyjściowego");
+    // Validate format
+    if (fileHeader.bfType != 0x4D42 || infoHeader.biBitCount != 24) {
+        printf("Only 24-bit BMP files are supported\n");
+        fclose(in);
         return 1;
     }
 
-    fwrite(&header, sizeof(BMPHeader), 1, out);
-    fwrite(&dib, sizeof(DIBHeader), 1, out);
-    fwrite(output_data, new_stride, height, out);
+    // Calculate image parameters
+    int width = infoHeader.biWidth;
+    int height = abs(infoHeader.biHeight);
+    int input_stride = (width * 3 + 3) & ~3;
+
+    // New dimensions after scaling
+    int new_width = width / scale;  // Używamy zmiennej scale
+    int output_stride = (new_width * 3 + 3) & ~3;
+
+    // Allocate memory
+    uint8_t *src_pixels = malloc(input_stride * height);
+    uint8_t *dst_pixels = calloc(output_stride * height, 1); // Wypełnij zerami
+    
+    fseek(in, fileHeader.bfOffBits, SEEK_SET);
+    fread(src_pixels, 1, input_stride * height, in);
+    fclose(in);
+
+    // Call scale funtion
+    printf("DBG (C): w=%u h=%u in_str=%u out_str=%u scale=%u new_w=%u\n",
+       width, height, input_stride, output_stride, scale, width/scale);
+    printf("Calling ASM scaling function with scale=%d...\n", scale);
+    scaledownhor(src_pixels, dst_pixels, width, height, 
+                    input_stride, output_stride, scale);
+    printf("Scaling completed.\n");
+
+    // Update headers
+    infoHeader.biWidth = new_width;
+    infoHeader.biSizeImage = output_stride * height;
+    fileHeader.bfSize = sizeof(fileHeader) + sizeof(infoHeader) + infoHeader.biSizeImage;
+
+    // Save output file
+    FILE *out = fopen(argv[2], "wb");
+    fwrite(&fileHeader, sizeof(fileHeader), 1, out);
+    fwrite(&infoHeader, sizeof(infoHeader), 1, out);
+    fwrite(dst_pixels, 1, output_stride * height, out);
     fclose(out);
 
-    free(input_data);
-    free(output_data);
+    free(src_pixels);
+    free(dst_pixels);
+    printf("Successfully created scaled image %s\n", argv[2]);
     return 0;
 }
